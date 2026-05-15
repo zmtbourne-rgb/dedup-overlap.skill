@@ -1,13 +1,13 @@
 ---
 name: dedup-overlap.skill
-description: "Deduplicate and concatenate ordered video segments with repeated boundary freeze frames. Use when videos have duplicated overlap frames at joins, such as prev tail 100 frames matching next head 100 frames, and the goal is to remove static duplicate frames before merging into one smooth video."
+description: "按顺序拼接多段视频，并删除相邻片段之间的重复定格帧。适合 prev 尾部 N 帧和 next 开头 N 帧重复的场景，支持自动检测 auto 和严格删除完整重复区 strict 两种策略。"
 ---
 
 # dedup-overlap.skill
 
-This skill removes repeated freeze-frame overlap between ordered video segments and concatenates them into one output video.
+这个 skill 用于把多段视频按顺序拼接成一个完整视频，并删除相邻视频之间多余的重复定格帧。
 
-Typical input:
+典型输入：
 
 ```text
 P01_tenet.mp4
@@ -16,152 +16,114 @@ P03_tenet.mp4
 ...
 ```
 
-Typical repeated-frame structure:
+典型重复帧结构：
 
 ```text
 prev video tail 100 frames ~= next video head 100 frames
 ```
 
-## Core Rule
+## 两种策略
 
-Do not use best-frame matching as the first strategy.
+### auto
 
-Priority:
+默认策略，适合重复帧数量不完全稳定的情况。
 
 ```text
-1. Detect static duplicate zones in prev tail and next head.
-2. If both static zones are found, remove the full static duplicate zones.
-3. If static zones are not reliable, fall back to best matching frame pair.
+1. 读取上一段尾部 repeat_frames 帧和下一段开头 repeat_frames 帧。
+2. 优先检测静态重复区。
+3. 如果静态区可靠，就删除检测到的静态区。
+4. 如果静态区不可靠，就退回到最相似帧匹配。
 ```
 
-This avoids picking a frame in the middle of a freeze zone and leaving visible stutter in the final video.
+### strict
 
-## Script
+严格删除完整重复区。适合你明确知道重复帧数量的情况，比如人为添加了 30、80、100 帧定格重复帧。
 
-Use the bundled script:
-
-```bash
-python3 scripts/dedup_overlap.py INPUT_DIR --output OUTPUT.mp4
+```text
+每个拼接点固定删除：
+上一段视频尾部 repeat_frames 帧
+下一段视频开头 repeat_frames 帧
 ```
 
-GitHub usage after cloning this repository:
+例如 `repeat_frames=30`：
+
+```text
+part_01 尾部 30 帧删除
+part_02 开头 30 帧删除
+```
+
+## 命令
+
+默认自动检测：
 
 ```bash
-cd dedup-overlap.skill
+python3 scripts/dedup_overlap.py INPUT_DIR \
+  --pattern "P*_tenet.mp4" \
+  --repeat_frames 100 \
+  --output OUTPUT.mp4
+```
+
+严格删除完整重复区：
+
+```bash
+python3 scripts/dedup_overlap.py "/path/to/tenet_outputs" \
+  --pattern "part_*_tenet.mp4" \
+  --repeat_frames 30 \
+  --strategy strict \
+  --output "/path/to/tenet_outputs/final_dedup_merged_30f_strict.mp4"
+```
+
+## 安装依赖
+
+```bash
 python3 -m pip install opencv-python numpy
-python3 scripts/dedup_overlap.py "/path/to/tenet_outputs" \
-  --pattern "P*_tenet.mp4" \
-  --repeat_frames 100 \
-  --output "/path/to/tenet_outputs/final_dedup_merged.mp4"
 ```
 
-Common command:
+需要系统 PATH 里可以访问 `ffmpeg` 和 `ffprobe`。
 
-```bash
-python3 scripts/dedup_overlap.py "/path/to/tenet_outputs" \
-  --pattern "P*_tenet.mp4" \
-  --repeat_frames 100 \
-  --output "/path/to/tenet_outputs/final_dedup_merged.mp4"
-```
-
-## Default Parameters
+## 参数
 
 ```text
+input_dir = 输入视频文件夹
+pattern = 输入视频匹配规则，默认 P*_tenet.mp4
+output = 输出视频路径，默认 dedup_overlap_merged.mp4
+log = 输出 JSON 日志路径，默认和输出视频同名
+strategy = 去重策略，默认 auto，可选 auto / strict
 repeat_frames = 100
 static_threshold = 0.8
 min_static_run = 10
 resize_width = 180
 resize_height = 320
-similarity_method = MAD
 ```
 
-`MAD` means:
+`static_threshold`、`min_static_run`、`resize_width`、`resize_height` 只影响 `auto` 策略；`strict` 策略不做画面检测。
 
-```text
-mean(abs(frame_a - frame_b))
-```
+## 日志
 
-Lower score means more similar.
+脚本会在输出视频旁边写一个 JSON 日志。
 
-## Algorithm
-
-For each adjacent pair:
-
-```text
-prev = videos[i]
-next = videos[i + 1]
-```
-
-Read:
-
-```text
-prev_tail = last repeat_frames frames of prev
-next_head = first repeat_frames frames of next
-```
-
-Preprocess:
-
-```text
-convert to grayscale
-resize to 180x320
-```
-
-Detect static zones:
-
-```text
-prev_diffs[i] = mean(abs(prev_tail[i] - prev_tail[i + 1]))
-next_diffs[i] = mean(abs(next_head[i] - next_head[i + 1]))
-```
-
-For `prev_tail`, scan backward to find the static suffix start.
-
-For `next_head`, scan forward to find the static prefix end.
-
-If both are found:
-
-```text
-prev_keep_frame = prev_tail_global_start + prev_static_start
-next_start_frame = next_static_end + 1
-```
-
-Otherwise, fall back to all-pairs matching inside the two 100-frame windows:
-
-```text
-prev_keep_frame = best_prev_frame
-next_start_frame = best_next_frame + 1
-```
-
-## Output Log
-
-The script writes a JSON log next to the output video unless `--log` is provided.
-
-Each join records:
+每个拼接点会记录：
 
 ```json
 {
-  "prev": "P01_tenet.mp4",
-  "next": "P02_tenet.mp4",
-  "method": "static-zone",
-  "prev_keep_frame": 800,
-  "next_start_frame": 100,
-  "removed_prev_tail_frames": 99,
-  "removed_next_head_frames": 100,
-  "best_mad": 1.725
+  "prev": "part_01_tenet.mp4",
+  "next": "part_02_tenet.mp4",
+  "method": "strict-repeat",
+  "prev_keep_frame": 869,
+  "next_start_frame": 30,
+  "removed_prev_tail_frames": 30,
+  "removed_next_head_frames": 30,
+  "output_join_time_sec": 29.0
 }
 ```
 
-## Validation
+## 验证
 
-After running, verify:
+运行后可以用：
 
 ```bash
 ffprobe -v error -show_entries stream=index,codec_type,duration,nb_frames \
   -of default=noprint_wrappers=1 output.mp4
 ```
 
-The output should:
-
-- Have one video stream.
-- Preserve audio when inputs have audio.
-- Have frame count equal to the sum of all kept frame ranges.
-- Avoid long static runs at joins.
+检查最终视频是否有视频轨、音频轨、时长和帧数是否符合预期。

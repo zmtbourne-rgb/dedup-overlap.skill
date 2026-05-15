@@ -8,12 +8,23 @@
 上一段视频结尾 100 帧 ≈ 下一段视频开头 100 帧
 ```
 
-如果直接拼接，会出现明显的定格、卡顿或重复画面。这个脚本会先识别拼接处的静态重复区，把多余重复帧剪掉，再合成一个完整视频。
+如果直接拼接，会出现明显的定格、卡顿或重复画面。这个脚本可以用两种策略处理：
+
+```text
+auto:
+  自动检测静态重复区，检测失败时退回到最相似帧匹配。
+
+strict:
+  不做相似度判断，直接删除完整重复区。
+  例如 repeat_frames=30 时，每个拼接点删除：
+  上一段视频尾部 30 帧 + 下一段视频开头 30 帧。
+```
 
 ## 功能
 
 - 只扫描拼接点附近，不扫描整条视频。
 - 支持 30、60、100 等不同数量的重复帧。
+- 支持 `auto` 和 `strict` 两种去重策略。
 - 优先检测静态重复区，而不是直接找最相似帧。
 - 如果没有检测到可靠静态区，会自动退回到最相似帧匹配。
 - 视频和音频会一起裁剪，尽量保持音画同步。
@@ -54,6 +65,16 @@ python3 scripts/dedup_overlap.py "/path/to/tenet_outputs" \
   --pattern "P*_tenet.mp4" \
   --repeat_frames 100 \
   --output "/path/to/tenet_outputs/final_dedup_merged.mp4"
+```
+
+如果你明确知道相邻视频之间就是固定数量的重复定格帧，推荐使用严格删除完整重复区：
+
+```bash
+python3 scripts/dedup_overlap.py "/path/to/tenet_outputs" \
+  --pattern "part_*_tenet.mp4" \
+  --repeat_frames 30 \
+  --strategy strict \
+  --output "/path/to/tenet_outputs/final_dedup_merged_30f_strict.mp4"
 ```
 
 示例：
@@ -136,6 +157,7 @@ next:
 
 method:
   使用的剪切方法
+  strict-repeat 表示严格删除完整重复区
   static-zone 表示检测到了静态重复区
   best-pair 表示没有检测到静态区，退回到最相似帧匹配
 
@@ -203,7 +225,7 @@ resize_width = 180
 resize_height = 320
 ```
 
-处理优先级：
+`auto` 策略处理优先级：
 
 ```text
 1. 优先检测静态重复区，并删除完整重复区。
@@ -219,6 +241,27 @@ resize_height = 320
 ```
 
 所以这个脚本不是简单找最相似帧，而是优先把完整的静态重复区剪掉。
+
+`strict` 策略不做检测，直接按结构剪：
+
+```text
+上一段视频保留到：总帧数 - repeat_frames - 1
+下一段视频从：repeat_frames
+```
+
+举例：
+
+```text
+repeat_frames = 30
+part_01 尾部 30 帧删除
+part_02 开头 30 帧删除
+
+repeat_frames = 80
+part_01 尾部 80 帧删除
+part_02 开头 80 帧删除
+```
+
+这个策略适合你已经确定重复帧数量的情况，比如切片时人为添加了 30/80/100 帧定格重复帧。
 
 ## 参数说明
 
@@ -241,6 +284,13 @@ input_dir
 --repeat_frames
   拼接点检查窗口大小
   默认：100
+
+--strategy
+  去重策略
+  默认：auto
+  可选值：
+    auto   自动检测静态重复区，失败时用最相似帧兜底
+    strict 直接删除完整重复区，不做相似度判断
 
 --static_threshold
   判断静态帧的差异阈值
@@ -315,4 +365,3 @@ DreamFace 输出后的视频拼接
 没有任何重复帧区域的视频
 帧率不一致且未提前统一的视频
 ```
-

@@ -110,6 +110,24 @@ def best_pair(prev_frames, next_frames):
 
 
 def boundary_plan(prev_path: Path, next_path: Path, prev_count: int, args):
+    if args.strategy == "strict":
+        if prev_count <= args.repeat_frames:
+            raise RuntimeError(
+                f"{prev_path.name} has only {prev_count} frames, cannot remove {args.repeat_frames} tail frames"
+            )
+        return {
+            "method": "strict-repeat",
+            "prev_keep_frame": prev_count - 1 - args.repeat_frames,
+            "next_start_frame": args.repeat_frames,
+            "removed_prev_tail_frames": args.repeat_frames,
+            "removed_next_head_frames": args.repeat_frames,
+            "best_prev_frame": None,
+            "best_next_frame": None,
+            "best_mad": None,
+            "prev_static_start_frame": None,
+            "next_static_end_frame": None,
+        }
+
     prev_start = max(0, prev_count - args.repeat_frames)
     prev_count_window = min(args.repeat_frames, prev_count - prev_start)
     next_count_window = args.repeat_frames
@@ -226,6 +244,15 @@ def parse_args():
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--log", type=Path, default=None)
     parser.add_argument("--repeat_frames", type=int, default=100)
+    parser.add_argument(
+        "--strategy",
+        choices=["auto", "strict"],
+        default="auto",
+        help=(
+            "auto: detect static duplicate zones and fall back to best-frame matching; "
+            "strict: always remove repeat_frames from the previous tail and next head."
+        ),
+    )
     parser.add_argument("--static_threshold", type=float, default=0.8)
     parser.add_argument("--min_static_run", type=int, default=10)
     parser.add_argument("--resize_width", type=int, default=180)
@@ -273,7 +300,8 @@ def main():
             f"  {join['prev']}->{join['next']}: method={join['method']}, "
             f"keep_prev={join['prev_keep_frame']}, start_next={join['next_start_frame']}, "
             f"remove_prev={join['removed_prev_tail_frames']}, "
-            f"remove_next={join['removed_next_head_frames']}, MAD={join['best_mad']:.4f}"
+            f"remove_next={join['removed_next_head_frames']}"
+            + ("" if join["best_mad"] is None else f", MAD={join['best_mad']:.4f}")
         )
 
     ranges = []
@@ -283,6 +311,12 @@ def main():
             raise RuntimeError(f"Invalid cut for {video.name}: {start}-{end}")
         ranges.append({"video": video.name, "start_frame": start, "end_frame": end, "frames": end - start + 1})
         print(f"  {video.name}: keep frames {start}-{end} ({end - start + 1} frames)")
+
+    output_cursor = 0
+    for idx, join in enumerate(joins):
+        output_cursor += ranges[idx]["frames"]
+        join["output_join_frame"] = output_cursor
+        join["output_join_time_sec"] = output_cursor / fps
 
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="dedup_overlap_", dir="/private/tmp") as tmp:
@@ -298,6 +332,7 @@ def main():
         "input_dir": str(input_dir),
         "pattern": args.pattern,
         "output": str(output),
+        "strategy": args.strategy,
         "repeat_frames": args.repeat_frames,
         "static_threshold": args.static_threshold,
         "min_static_run": args.min_static_run,
